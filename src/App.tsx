@@ -138,8 +138,8 @@ export default function App() {
     if (!file) return;
     setOcrLoading(true);
     try {
-      const { blob } = await preprocessImage(file);
-      const result = await recognizeImage(blob);
+      const { dataUrl } = await preprocessImage(file);
+      const result = await recognizeImage(dataUrl);
       if (result.error) {
         notify(`Ошибка распознавания: ${result.error}`, 'warn');
         return;

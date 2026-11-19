@@ -1,13 +1,12 @@
-// Preprocess an image file into a compressed JPEG Blob suitable for OCR.space upload.
-// Also returns a base64 data URL for preview display.
+// Preprocess an image file into a compressed JPEG data URL (base64)
+// suitable for OCR.space's base64Image upload.
 
 export interface PreprocessedImage {
-  blob: Blob;
   dataUrl: string;
 }
 
-const MAX_WIDTH = 1600;
-const JPEG_QUALITY = 0.85;
+const MAX_WIDTH = 1000;
+const JPEG_QUALITY = 0.8;
 
 export async function preprocessImage(file: File | Blob): Promise<PreprocessedImage> {
   const bitmap = await loadBitmap(file);
@@ -27,15 +26,11 @@ export async function preprocessImage(file: File | Blob): Promise<PreprocessedIm
   ctx.drawImage(bitmap as CanvasImageSource, 0, 0, w, h);
 
   const dataUrl = canvas.toDataURL('image/jpeg', JPEG_QUALITY);
-  const blob = await new Promise<Blob>((resolve, reject) => {
-    canvas.toBlob(
-      (b) => (b ? resolve(b) : reject(new Error('Не удалось создать изображение'))),
-      'image/jpeg',
-      JPEG_QUALITY
-    );
-  });
+  if (!dataUrl.startsWith('data:image/jpeg;base64,')) {
+    throw new Error('Не удалось создать изображение');
+  }
 
-  return { blob, dataUrl };
+  return { dataUrl };
 }
 
 async function loadBitmap(file: File | Blob): Promise<ImageBitmap | HTMLImageElement> {
