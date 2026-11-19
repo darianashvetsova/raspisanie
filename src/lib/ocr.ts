@@ -304,6 +304,7 @@ function parseWindowBlocks(lines: string[]): ParsedLesson[] {
       room: caption,
     });
     i += subjIdx + (caption ? 1 : 0);
+    }
   }
   return results;
 }
