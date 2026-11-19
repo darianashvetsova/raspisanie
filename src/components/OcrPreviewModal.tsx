@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useState } from 'react';
 import Modal from './Modal';
 import type { Lesson, LessonType } from '@/types';
 import { uid } from '@/lib/storage';
@@ -30,15 +30,19 @@ export default function OcrPreviewModal({
   const [date, setDate] = useState(defaultDate);
   const [rows, setRows] = useState<EditableRow[]>([]);
   const [showRaw, setShowRaw] = useState(false);
-  const seedRef = useRef('');
+  // tracks which `parsed` array the rows were seeded from; a new scan always
+  // produces a new array reference, so every open/scan reseeds exactly once
+  const [seededFrom, setSeededFrom] = useState<ParsedLesson[] | null>(null);
 
-  if (open && seedRef.current !== defaultDate + JSON.stringify(parsed.map((p) => p.startTime + p.subject))) {
-    seedRef.current = defaultDate + JSON.stringify(parsed.map((p) => p.startTime + p.subject));
+  if (open && seededFrom !== parsed) {
+    setSeededFrom(parsed);
     setDate(defaultDate);
     setRows(parsed.map((p) => ({ ...p, _id: uid() })));
     setShowRaw(false);
   }
-  if (!open && seedRef.current) seedRef.current = '';
+  if (!open && seededFrom !== null) {
+    setSeededFrom(null);
+  }
 
   const update = (id: string, patch: Partial<EditableRow>) => {
     setRows((r) => r.map((row) => (row._id === id ? { ...row, ...patch } : row)));
