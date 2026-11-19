@@ -59,11 +59,16 @@ export async function recognizeImage(blob: Blob): Promise<OcrResult> {
   // OCR.space returns ParsedResults array or an error
   const exitCode: number = data.ExitCode ?? -1;
   if (exitCode !== 1) {
-    const errMsg =
+    const raw =
       data.ErrorMessage?.[0] ??
+      (Array.isArray(data.ErrorMessage) && data.ErrorMessage.length > 0
+        ? data.ErrorMessage.join('; ')
+        : null) ??
       data.ErrorDetails ??
-      'OCR.space вернул ошибку (возможно, превышен лимит бесплатных запросов)';
-    return { text: '', exitCode, error: String(errMsg) };
+      `OCR.space вернул ошибку (ExitCode ${exitCode})`;
+    const errMsg = String(raw).trim() || `OCR.space вернул ошибку (ExitCode ${exitCode})`;
+    console.error('OCR.space error:', errMsg, data);
+    return { text: '', exitCode, error: errMsg };
   }
 
   const results: Array<{ ParsedText?: string }> = data.ParsedResults ?? [];

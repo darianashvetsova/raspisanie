@@ -14,7 +14,9 @@ export interface ParsedLesson {
 }
 
 const TIME_RE = /(\d{1,2}[:.]\d{2})\s*[-–—]\s*(\d{1,2}[:.]\d{2})/;
-const PAIR_NUM_RE = /(\d+)\s*[-−–]?\s*[яЯ]\s*(?:пара)?/;
+const PAIR_NUM_RE = /(\d+)\s*[-−–]?\s*[яЯ]\s*пара/i;
+// OCR sometimes recognises icons / stray glyphs as 1-2 character lines (e.g. "歯")
+const JUNK_LINE_RE = /^.{1,2}$/u;
 
 const TEACHER_RANKS = ['доц', 'проф', 'ст\\.?преп', 'ст\\.? преп', 'преп', 'асс', 'старший преподаватель'];
 const TEACHER_RE = new RegExp(
@@ -101,7 +103,7 @@ function extractSubgroup(subject: string): { subject: string; subgroup: string }
   if (m) {
     return {
       subgroup: `п/г ${m[1]}`,
-      subject: subject.replace(m[0], '').replace(/\s+/g, ' ').trim(),
+      subject: subject.replace(m[0], '').replace(/[,\s]+$/, '').replace(/\s+/g, ' ').trim(),
     };
   }
   return { subject, subgroup: '' };
@@ -123,61 +125,83 @@ function splitIntoBlocks(lines: string[]): Block[] {
 
   const blocks: Block[] = [];
   for (let bi = 0; bi < timeIndices.length; bi++) {
-    const start = timeIndices[bi];
+    const start = timeIndices[bi] + 1;
     const end = bi + 1 < timeIndices.length ? timeIndices[bi + 1] : lines.length;
-    const slice = lines.slice(start, end).map((l) => l.trim()).filter(Boolean);
-    if (slice.length === 0) continue;
+    const bodyLines = lines
+      .slice(start, end)
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .filter((l) => !JUNK_LINE_RE.test(l));
 
-    const timeLine = slice[0];
-    const tm = timeLine.match(TIME_RE);
+    const tm = lines[timeIndices[bi]].match(TIME_RE);
     if (!tm) continue;
 
-    // look for pair number in the time line or nearby lines
+    // pair number ("1-я пара") is the last line of the block, right before
+    // the next time line — search from the end and drop it from the body
     let number = bi + 1;
-    const numSearch = slice.slice(0, 2).join(' ');
-    const numMatch = numSearch.match(PAIR_NUM_RE);
-    if (numMatch) number = parseInt(numMatch[1], 10);
-
-    // remaining lines (excluding the time line itself's time portion)
-    const restLines = slice.slice(1);
-    // also append the non-time part of the time line
-    const timeLineRest = timeLine.replace(tm[0], ' ').replace(PAIR_NUM_RE, ' ').replace(/\s+/g, ' ').trim();
-    const allLines = [timeLineRest, ...restLines].filter(Boolean);
+    const numIdx = bodyLines.findIndex((l) => PAIR_NUM_RE.test(l));
+    if (numIdx >= 0) {
+      number = parseInt(bodyLines[numIdx].match(PAIR_NUM_RE)![1], 10);
+      bodyLines.splice(numIdx, 1);
+    }
 
     blocks.push({
       number,
       startTime: normTime(tm[1]),
       endTime: normTime(tm[2]),
-      lines: allLines,
+      lines: bodyLines,
     });
   }
   return blocks;
 }
 
+function isRoomLine(line: string): boolean {
+  return (
+    /^ауд\.?/i.test(line) ||
+    /^спортзал/i.test(line) ||
+    /^дист/i.test(line) ||
+    /^\d+-\d+[а-яa-z]*$/i.test(line) ||
+    /^\d{2,}[а-яa-z]?$/i.test(line)
+  );
+}
+
+// expected block layout after the time line:
+//   1. type + subject ("пр Высшая математика, п/г 1")
+//   2. teacher ("доц. Лановая А.В.")
+//   3. room ("10-506")
+//   4. pair number ("1-я пара") — already stripped in splitIntoBlocks
 function parseBlock(block: Block): ParsedLesson {
-  const joined = block.lines.join(' ').replace(/\s+/g, ' ').trim();
+  const lines = [...block.lines];
 
-  // subject + type: first meaningful line (or joined)
-  const firstLine = block.lines[0] || '';
-  const { type, rest: afterType } = detectType(firstLine);
-  let subjectRaw = afterType || 'Предмет';
+  const firstLine = lines.shift() ?? '';
+  const { type, rest: subjectRaw } = detectType(firstLine);
 
-  // teacher
-  const { teacher, rest: afterTeacher } = extractTeacher(subjectRaw);
-  // room
-  const { room, rest: afterRoom } = extractRoom(afterTeacher);
-  let subject = afterRoom || 'Предмет';
+  let teacher = '';
+  const teacherIdx = lines.findIndex((l) => TEACHER_RE.test(l) || INITIALS_RE.test(l));
+  if (teacherIdx >= 0) {
+    teacher = extractTeacher(lines[teacherIdx]).teacher;
+    lines.splice(teacherIdx, 1);
+  }
 
-  // subgroup
-  const sg = extractSubgroup(subject);
-  subject = sg.subject || 'Предмет';
+  let room = '';
+  const roomIdx = lines.findIndex(isRoomLine);
+  if (roomIdx >= 0) {
+    room = extractRoom(lines[roomIdx]).room;
+    lines.splice(roomIdx, 1);
+  }
+
+  const joined = [subjectRaw, ...lines].join(' ').replace(/\s+/g, ' ').trim();
+  if (!teacher) teacher = extractTeacher(joined).teacher;
+  if (!room) room = extractRoom(joined).room;
+
+  const sg = extractSubgroup(joined.replace(/[,\s]+$/, '').replace(/\s+/g, ' '));
 
   return {
     number: block.number,
     startTime: block.startTime,
     endTime: block.endTime,
     type,
-    subject: subject.trim(),
+    subject: sg.subject.trim() || 'Предмет',
     subgroup: sg.subgroup,
     teacher: teacher.trim(),
     room: room.trim(),
@@ -190,26 +214,11 @@ export function parseOcrText(text: string): ParsedLesson[] {
     .map((l) => l.trim())
     .filter(Boolean);
 
-  // If lines look collapsed (no newlines between pairs), split by time occurrences
-  const blocks = splitIntoBlocks(rawLines);
-  if (blocks.length > 0) {
-    return blocks.map(parseBlock);
-  }
+  // drop everything before the first time occurrence (day/date headers etc.)
+  const firstTimeIdx = rawLines.findIndex((l) => TIME_RE.test(l));
+  if (firstTimeIdx < 0) return [];
 
-  // Fallback: treat whole text as single block, try to find a time
-  const tm = text.match(TIME_RE);
-  if (tm) {
-    return [
-      parseBlock({
-        number: 1,
-        startTime: normTime(tm[1]),
-        endTime: normTime(tm[2]),
-        lines: [text.replace(tm[0], ' ').trim()],
-      }),
-    ];
-  }
-
-  return [];
+  return splitIntoBlocks(rawLines.slice(firstTimeIdx)).map(parseBlock);
 }
 
 export function parsedToLesson(p: ParsedLesson, date: string): Lesson {
