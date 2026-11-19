@@ -51,14 +51,22 @@ export function uniqueSubjects(lessons: Lesson[]): string[] {
   return Array.from(set).sort((a, b) => a.localeCompare(b, 'ru'));
 }
 
-// Find nearest future lesson for a given subject (date strictly > today).
+// Find nearest future lesson for a given subject (date strictly > today),
+// optionally filtered by lesson type.
 export function findNextLesson(
   lessons: Lesson[],
   subject: string,
-  today: string
+  today: string,
+  type?: LessonType
 ): Lesson | null {
   const matches = lessons
-    .filter((l) => l.subject === subject && l.date > today)
+    .filter(
+      (l) =>
+        l.subject === subject &&
+        l.date > today &&
+        !l.isWindow &&
+        (type ? l.type === type : true)
+    )
     .sort((a, b) =>
       a.date === b.date
         ? a.startTime.localeCompare(b.startTime)

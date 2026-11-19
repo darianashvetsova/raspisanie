@@ -61,6 +61,12 @@ export function weekdayShort(d: Date): string {
   return WEEKDAYS_SHORT[(d.getDay() + 6) % 7];
 }
 
+// "Пт, 20 нояб."
+export function formatDayHeader(d: Date): string {
+  const wd = WEEKDAYS_SHORT[(d.getDay() + 6) % 7];
+  return `${wd[0].toUpperCase()}${wd.slice(1)}, ${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}`;
+}
+
 export function todayKey(): string {
   return toDateKey(new Date());
 }

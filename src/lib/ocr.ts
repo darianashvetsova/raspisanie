@@ -15,10 +15,16 @@ export interface ParsedLesson {
 
 const TIME_RE = /(\d{1,2}[:.]\d{2})\s*[-–—]\s*(\d{1,2}[:.]\d{2})/;
 const PAIR_NUM_RE = /(\d+)\s*[-−–]?\s*[яЯ]\s*пара/i;
-// OCR sometimes recognises icons / stray glyphs as 1-2 character lines (e.g. "歯")
-const JUNK_LINE_RE = /^.{1,2}$/u;
+// junk lines: 1-2 chars without any letters/digits (icons, CJK glyphs, symbols)
+const JUNK_LINE_RE = /^[^A-Za-zА-ЯЁа-яё0-9]{1,2}$/u;
 
-const TEACHER_RANKS = ['доц', 'проф', 'ст\\.?преп', 'ст\\.? преп', 'преп', 'асс', 'старший преподаватель'];
+// "п/г 2" / "п/г2" — lessons of subgroup 2 are ignored entirely
+const SUBGROUP2_RE = /п\/г\s*2/i;
+
+// window card: "Окно" subject with caption, no ЧЧ:ММ time
+const WINDOW_SUBJECT_RE = /\bокно\b/i;
+
+const TEACHER_RANKS = ['зав\.?\s*каф\.?', 'доц', 'проф', 'ст\.?преп', 'ст\.? преп', 'преп', 'асс', 'старший преподаватель'];
 const TEACHER_RE = new RegExp(
   `(?:${TEACHER_RANKS.join('|')})\\.?\\s*([А-ЯЁA-Z][а-яёa-z]+(?:\\s+[А-ЯЁA-Z]\\.?\\s*[А-ЯЁA-Z]?\\.?)?)`,
   'i'
@@ -29,7 +35,7 @@ const NAME_LAST_RE = /([А-ЯЁA-Z][а-яёa-z]+\s+[А-ЯЁA-Z]\.?\s*[А-ЯЁA-Z
 const ROOM_PATTERNS = [
   /ауд\.?\s*([0-9]+[а-яa-z]*)/i,
   /спортзал/i,
-  /дист/i,
+  /(?:^|\s)(?:DIST|дист)\b/i,
   /(\d+-\d+[а-яa-z]*)/,
   /(\d{2,}[а-яa-z]?)/,
 ];
@@ -123,7 +129,46 @@ function splitIntoBlocks(lines: string[]): Block[] {
   }
   if (timeIndices.length === 0) return [];
 
+  // window cards ("6-я пара" / "Окно" / caption) sit between lesson blocks;
+  // collect them up-front and blank those line ranges out of the lesson stream
+  const windowRanges: Array<[number, number]> = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (!PAIR_NUM_RE.test(lines[i])) continue;
+    const next = lines.slice(i + 1, i + 3);
+    const subjIdx = next.findIndex((l) => WINDOW_SUBJECT_RE.test(l));
+    if (subjIdx >= 0) {
+      const hasCaption = next.slice(subjIdx + 1).some((l) => /свобод/i.test(l));
+      windowRanges.push([i, i + 1 + subjIdx + (hasCaption ? 1 : 0)]);
+    }
+  }
+  const isWindowLine = (idx: number) =>
+    windowRanges.some(([a, b]) => idx >= a && idx <= b);
+
+  const windows: ParsedLesson[] = windowRanges.map(([a, b]) => {
+    const caption = lines.slice(a, b + 1).find((l) => /свобод/i.test(l)) ?? '';
+    return {
+      number: parseInt(lines[a].match(PAIR_NUM_RE)![1], 10),
+      startTime: '',
+      endTime: '',
+      type: 'practice',
+      subject: 'Окно',
+      subgroup: '',
+      teacher: '',
+      room: caption,
+    };
+  });
+
   const blocks: Block[] = [];
+  for (let bi = 0; bi < timeIndices.length; bi++) {
+    const start = timeIndices[bi] + 1;
+    const end = bi + 1 < timeIndices.length ? timeIndices[bi + 1] : lines.length;
+    const bodyLines = lines
+      .slice(start, end)
+      .map((l, k) => ({ l: l.trim(), idx: start + k }))
+      .filter(({ l }) => Boolean(l))
+      .filter(({ l }) => !JUNK_LINE_RE.test(l))
+      .filter(({ idx }) => !isWindowLine(idx))
+      .map(({ l }) => l);
   for (let bi = 0; bi < timeIndices.length; bi++) {
     const start = timeIndices[bi] + 1;
     const end = bi + 1 < timeIndices.length ? timeIndices[bi + 1] : lines.length;
@@ -152,17 +197,29 @@ function splitIntoBlocks(lines: string[]): Block[] {
       lines: bodyLines,
     });
   }
-  return blocks;
+  return { blocks, windows };
 }
 
 function isRoomLine(line: string): boolean {
   return (
     /^ауд\.?/i.test(line) ||
     /^спортзал/i.test(line) ||
-    /^дист/i.test(line) ||
+    /^(DIST|дист)\b/i.test(line) ||
     /^\d+-\d+[а-яa-z]*$/i.test(line) ||
     /^\d{2,}[а-яa-z]?$/i.test(line)
   );
+}
+
+// remove a room that leaked into the subject text ("Высшая математика 10-333")
+function stripRoom(subject: string): { subject: string; room: string } {
+  const m = subject.match(/\b\d+-\d+[а-яa-z]*\b/i);
+  if (m) {
+    return {
+      subject: subject.replace(m[0], ' ').replace(/\s{2,}/g, ' ').replace(/\s*[,,]\s*$/, '').trim(),
+      room: m[0],
+    };
+  }
+  return { subject, room: '' };
 }
 
 // expected block layout after the time line:
@@ -194,7 +251,16 @@ function parseBlock(block: Block): ParsedLesson {
   if (!teacher) teacher = extractTeacher(joined).teacher;
   if (!room) room = extractRoom(joined).room;
 
-  const sg = extractSubgroup(joined.replace(/[,\s]+$/, '').replace(/\s+/g, ' '));
+  let subject = joined.replace(/[,\s]+$/, '').replace(/\s+/g, ' ');
+  if (!room) {
+    const stripped = stripRoom(subject);
+    if (stripped.room) {
+      subject = stripped.subject;
+      room = stripped.room;
+    }
+  }
+
+  const sg = extractSubgroup(subject);
 
   return {
     number: block.number,
@@ -208,20 +274,79 @@ function parseBlock(block: Block): ParsedLesson {
   };
 }
 
+// window card block: pair number line, then "Окно", then caption —
+// no ЧЧ:ММ time. Lives after a lesson block's lines (which end with "N-я пара"),
+// so the window's own pair-number line is followed directly by "Окно".
+function parseWindowBlocks(lines: string[]): ParsedLesson[] {
+  const results: ParsedLesson[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const numMatch = lines[i].match(PAIR_NUM_RE);
+    if (!numMatch) continue;
+
+    // window = pair number immediately followed by "Окно" (within the next 2 lines)
+    const next = lines.slice(i + 1, i + 3);
+    const subjIdx = next.findIndex((l) => WINDOW_SUBJECT_RE.test(l));
+    if (subjIdx < 0) continue;
+
+    const caption =
+      next
+        .slice(subjIdx + 1)
+        .find((l) => /свобод/i.test(l)) ?? '';
+
+    results.push({
+      number: parseInt(numMatch[1], 10),
+      startTime: '',
+      endTime: '',
+      type: 'practice',
+      subject: 'Окно',
+      subgroup: '',
+      teacher: '',
+      room: caption,
+    });
+    i += subjIdx + (caption ? 1 : 0);
+  }
+  return results;
+}
+
 export function parseOcrText(text: string): ParsedLesson[] {
   const rawLines = text
     .split(/\r?\n+/)
     .map((l) => l.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((l) => !JUNK_LINE_RE.test(l));
+
+  const windows = parseWindowBlocks(rawLines);
 
   // drop everything before the first time occurrence (day/date headers etc.)
   const firstTimeIdx = rawLines.findIndex((l) => TIME_RE.test(l));
-  if (firstTimeIdx < 0) return [];
+  if (firstTimeIdx < 0) return windows;
 
-  return splitIntoBlocks(rawLines.slice(firstTimeIdx)).map(parseBlock);
+  const lessons = splitIntoBlocks(rawLines.slice(firstTimeIdx))
+    .map(parseBlock)
+    .filter((p) => !SUBGROUP2_RE.test(p.subgroup) && !SUBGROUP2_RE.test(p.subject))
+    .sort((a, b) => a.number - b.number);
+
+  // interleave windows by pair number
+  const all = [...lessons, ...windows].sort((a, b) => a.number - b.number);
+  return all;
 }
 
 export function parsedToLesson(p: ParsedLesson, date: string): Lesson {
+  if (p.subject === 'Окно' || p.startTime === '') {
+    return {
+      id: uid(),
+      date,
+      startTime: '',
+      endTime: '',
+      number: p.number,
+      subject: 'Окно',
+      type: 'practice',
+      teacher: '',
+      room: '',
+      homework: null,
+      isWindow: true,
+    };
+  }
   return {
     id: uid(),
     date,

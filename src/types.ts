@@ -19,6 +19,8 @@ export interface Lesson {
   teacher: string;
   room: string;
   homework?: Homework | null;
+  note?: string | null; // personal note for this specific lesson
+  isWindow?: boolean; // "Окно" — free slot between lessons, no times
 }
 
 export interface AppState {
