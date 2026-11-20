@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronLeft, ChevronRight, Plus, Camera, PenLine, Pencil, GraduationCap, Settings } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Plus, Camera, PenLine, Pencil, GraduationCap, Settings, CalendarDays, ClipboardList, Coffee } from 'lucide-react';
 import type { AppState, Lesson } from '@/types';
 import { loadState, saveState, uid } from '@/lib/storage';
 import {
@@ -11,7 +11,7 @@ import {
   weekdayShort,
   todayKey,
   toDateKey,
-  isSameDay,
+  shiftScheduleDay,
 } from '@/lib/dates';
 import { uniqueSubjects } from '@/lib/lessonUtils';
 import LessonCard from '@/components/LessonCard';
@@ -20,6 +20,8 @@ import LessonModal from '@/components/LessonModal';
 import HomeworkModal from '@/components/HomeworkModal';
 import OcrPreviewModal from '@/components/OcrPreviewModal';
 import Toasts, { type Toast } from '@/components/Toasts';
+import NoteModal from '@/components/NoteModal';
+import HomeworkWeekTab from '@/components/HomeworkWeekTab';
 import { parseOcrText, type ParsedLesson } from '@/lib/ocr';
 import { preprocessImage } from '@/lib/imagePreprocess';
 import { recognizeImage, getOcrApiKey, setOcrApiKey } from '@/lib/ocrSpace';
@@ -43,6 +45,9 @@ export default function App() {
   const [ocrApiKeyInput, setOcrApiKeyInput] = useState(() => getOcrApiKey());
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  const [noteModalOpen, setNoteModalOpen] = useState(false);
+  const [noteLesson, setNoteLesson] = useState<Lesson | null>(null);
+  const [tab, setTab] = useState<'schedule' | 'hw-week'>('schedule');
   const [toasts, setToasts] = useState<Toast[]>([]);
   const notify = (text: string, kind: Toast['kind'] = 'info') => {
     setToasts((t) => [...t, { id: Date.now() + Math.random(), text, kind }]);
@@ -59,7 +64,10 @@ export default function App() {
   const lessonsForSelected = useMemo(() => {
     return state.lessons
       .filter((l) => l.date === selectedDate)
-      .sort((a, b) => a.startTime.localeCompare(b.startTime));
+      .sort((a, b) => {
+        if (a.isWindow !== b.isWindow) return a.isWindow ? 1 : -1;
+        return a.startTime.localeCompare(b.startTime);
+      });
   }, [state.lessons, selectedDate]);
 
   // subjects that exist on the selected week (for empty hint)
@@ -74,6 +82,56 @@ export default function App() {
   const prevWeek = () => setWeekStart((w) => addWeeks(w, -1));
   const nextWeek = () => setWeekStart((w) => addWeeks(w, 1));
 
+  // swipe navigation between days (Mon..Sat, wraps across weeks)
+  const goNextDay = () => {
+    const { dateKey, newWeek } = shiftScheduleDay(selectedDate, 1);
+    if (newWeek) setWeekStart((w) => addWeeks(w, 1));
+    setSelectedDate(dateKey);
+  };
+  const goPrevDay = () => {
+    const { dateKey, newWeek } = shiftScheduleDay(selectedDate, -1);
+    if (newWeek) setWeekStart((w) => addWeeks(w, -1));
+    setSelectedDate(dateKey);
+  };
+
+  const touchStartX = useRef<number | null>(null);
+  const touchStartY = useRef<number | null>(null);
+
+  const onTouchStart = (e: React.TouchEvent) => {
+    touchStartX.current = e.touches[0].clientX;
+    touchStartY.current = e.touches[0].clientY;
+  };
+  const onTouchEnd = (e: React.TouchEvent) => {
+    if (touchStartX.current === null || touchStartY.current === null) return;
+    const dx = e.changedTouches[0].clientX - touchStartX.current;
+    const dy = e.changedTouches[0].clientY - touchStartY.current;
+    touchStartX.current = null;
+    touchStartY.current = null;
+    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 2) return;
+    if (dx < 0) goNextDay();
+    else goPrevDay();
+  };
+
+  // personal notes
+  const openNote = (lesson: Lesson) => {
+    setNoteLesson(lesson);
+    setNoteModalOpen(true);
+  };
+  const saveNote = (lessonId: string, text: string) => {
+    setState((s) => ({
+      ...s,
+      lessons: s.lessons.map((l) => (l.id === lessonId ? { ...l, note: text } : l)),
+    }));
+    notify('Заметка сохранена', 'success');
+  };
+  const deleteNote = (lessonId: string) => {
+    setState((s) => ({
+      ...s,
+      lessons: s.lessons.map((l) => (l.id === lessonId ? { ...l, note: null } : l)),
+    }));
+    notify('Заметка удалена', 'info');
+  };
+
   // lesson CRUD
   const upsertLesson = (lesson: Lesson) => {
     setState((s) => {
@@ -87,6 +145,31 @@ export default function App() {
 
   const deleteLesson = (id: string) => {
     setState((s) => ({ ...s, lessons: s.lessons.filter((l) => l.id !== id) }));
+  };
+
+  const addWindow = () => {
+    const dayLessons = state.lessons.filter((l) => l.date === selectedDate);
+    const maxNumber = dayLessons.reduce((m, l) => Math.max(m, l.number), 0);
+    setState((s) => ({
+      ...s,
+      lessons: [
+        ...s.lessons,
+        {
+          id: uid(),
+          date: selectedDate,
+          startTime: '',
+          endTime: '',
+          number: maxNumber + 1,
+          subject: 'Окно',
+          type: 'practice' as const,
+          teacher: '',
+          room: 'Свободное время между занятиями',
+          homework: null,
+          isWindow: true,
+        },
+      ],
+    }));
+    notify('Окно добавлено', 'success');
   };
 
   const openEdit = (lesson: Lesson) => {
@@ -119,6 +202,16 @@ export default function App() {
           : l
       ),
     }));
+  };
+
+  const deleteHw = (lessonId: string) => {
+    setState((s) => ({
+      ...s,
+      lessons: s.lessons.map((l) =>
+        l.id === lessonId ? { ...l, homework: null } : l
+      ),
+    }));
+    notify('Домашнее задание удалено', 'info');
   };
 
   // group name
@@ -185,7 +278,7 @@ export default function App() {
       </div>
 
       <div className="relative px-4 pt-4 pb-32">
-        {/* Header: group + week switcher */}
+        {/* Header: group + tabs */}
         <header className="mb-4">
           <div className="flex items-center gap-2 mb-3">
             <div className="flex-1 flex items-center gap-2 min-w-0">
@@ -210,7 +303,34 @@ export default function App() {
             </button>
           </div>
 
-          {/* week switcher */}
+          {/* tab switcher */}
+          <div className="grid grid-cols-2 gap-1 rounded-2xl border border-neutral-800 bg-neutral-900/70 p-1">
+            <button
+              onClick={() => setTab('schedule')}
+              className={`flex items-center justify-center gap-2 py-2 rounded-xl text-sm font-medium transition-colors ${
+                tab === 'schedule'
+                  ? 'bg-sky-500 text-white shadow-lg shadow-sky-500/20'
+                  : 'text-neutral-400 hover:text-white'
+              }`}
+            >
+              <CalendarDays size={15} />
+              Расписание
+            </button>
+            <button
+              onClick={() => setTab('hw-week')}
+              className={`flex items-center justify-center gap-2 py-2 rounded-xl text-sm font-medium transition-colors ${
+                tab === 'hw-week'
+                  ? 'bg-sky-500 text-white shadow-lg shadow-sky-500/20'
+                  : 'text-neutral-400 hover:text-white'
+              }`}
+            >
+              <ClipboardList size={15} />
+              ДЗ на неделю
+            </button>
+          </div>
+
+          {/* week switcher (schedule tab only) */}
+          {tab === 'schedule' && (
           <div className="flex items-center justify-between gap-2 rounded-2xl border border-neutral-800 bg-neutral-900/70 px-2 py-2">
             <button
               onClick={prevWeek}
@@ -238,8 +358,10 @@ export default function App() {
               </button>
             </div>
           </div>
+          )}
 
-          {/* day strip */}
+          {/* day strip (schedule tab only) */}
+          {tab === 'schedule' && (
           <div className="mt-3 grid grid-cols-6 gap-1.5">
             {days.map((d) => {
               const key = toDateKey(d);
@@ -269,10 +391,12 @@ export default function App() {
               );
             })}
           </div>
+          )}
         </header>
 
-        {/* Lessons list */}
-        <section>
+        {/* Lessons list (schedule tab) */}
+        {tab === 'schedule' && (
+        <section onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
           <div className="flex items-center justify-between mb-3 px-1">
             <h2 className="text-sm font-medium text-neutral-400">
               {selectedDayLessonsCount > 0
@@ -289,6 +413,8 @@ export default function App() {
                 onToggleHw={toggleHw}
                 onEdit={openEdit}
                 onDelete={deleteLesson}
+                onOpenNote={openNote}
+                onDeleteHw={deleteHw}
               />
             ))}
 
@@ -300,11 +426,33 @@ export default function App() {
                 </p>
               </div>
             )}
+
+            <button
+              onClick={addWindow}
+              className="w-full py-2.5 rounded-xl border border-dashed border-neutral-800 text-xs text-neutral-500 hover:text-neutral-300 hover:border-neutral-700 transition-colors flex items-center justify-center gap-1.5"
+            >
+              <Coffee size={13} />
+              Добавить окно
+            </button>
           </div>
         </section>
+        )}
+
+        {/* Homework week view (hw-week tab) */}
+        {tab === 'hw-week' && (
+          <HomeworkWeekTab
+            weekStart={weekStart}
+            lessons={state.lessons}
+            onPrevWeek={prevWeek}
+            onNextWeek={nextWeek}
+            onToggleHw={toggleHw}
+            onDeleteHw={deleteHw}
+          />
+        )}
       </div>
 
-      {/* Bottom action bar */}
+      {/* Bottom action bar (schedule tab only) */}
+      {tab === 'schedule' && (
       <div className="fixed bottom-0 inset-x-0 z-40 max-w-2xl mx-auto px-4 pb-4 pt-2 bg-gradient-to-t from-neutral-950 via-neutral-950/90 to-transparent">
         <div className="flex gap-2">
           <button
@@ -332,6 +480,7 @@ export default function App() {
           </button>
         </div>
       </div>
+      )}
 
       <input
         ref={fileInputRef}
@@ -439,6 +588,14 @@ export default function App() {
           </button>
         </div>
       </Modal>
+
+      <NoteModal
+        open={noteModalOpen}
+        onClose={() => setNoteModalOpen(false)}
+        lesson={noteLesson}
+        onSave={saveNote}
+        onDelete={deleteNote}
+      />
 
       <Toasts toasts={toasts} onDismiss={dismissToast} />
 
