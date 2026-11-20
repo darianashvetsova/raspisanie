@@ -70,3 +70,17 @@ export function formatDayHeader(d: Date): string {
 export function todayKey(): string {
   return toDateKey(new Date());
 }
+
+// Next/previous day in the Mon..Sat schedule cycle, wrapping across weeks.
+export function shiftScheduleDay(
+  dateKey: string,
+  direction: 1 | -1
+): { dateKey: string; newWeek: boolean } {
+  const current = fromDateKey(dateKey);
+  let target = addDays(current, direction);
+  if (target.getDay() === 0) target = addDays(target, direction); // skip Sunday
+  return {
+    dateKey: toDateKey(target),
+    newWeek: startOfWeek(target).getTime() !== startOfWeek(current).getTime(),
+  };
+}
