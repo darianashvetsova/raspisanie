@@ -55,19 +55,35 @@ export default function OcrPreviewModal({
   const handleSave = () => {
     const lessons: Lesson[] = rows
       .filter((r) => r.subject.trim())
-      .map((r) => ({
-        id: uid(),
-        date,
-        startTime: r.startTime,
-        endTime: r.endTime,
-        number: r.number,
-        subject: r.subject.trim(),
-        subgroup: r.subgroup.trim() || undefined,
-        type: r.type,
-        teacher: r.teacher.trim(),
-        room: r.room.trim(),
-        homework: null,
-      }));
+      .map((r) =>
+        r.subject.trim() === 'Окно' || !r.startTime
+          ? {
+              id: uid(),
+              date,
+              startTime: '',
+              endTime: '',
+              number: r.number,
+              subject: 'Окно',
+              type: 'practice' as const,
+              teacher: '',
+              room: r.room.trim(),
+              homework: null,
+              isWindow: true,
+            }
+          : {
+              id: uid(),
+              date,
+              startTime: r.startTime,
+              endTime: r.endTime,
+              number: r.number,
+              subject: r.subject.trim(),
+              subgroup: r.subgroup.trim() || undefined,
+              type: r.type,
+              teacher: r.teacher.trim(),
+              room: r.room.trim(),
+              homework: null,
+            }
+      );
     onSave(lessons);
     onClose();
   };

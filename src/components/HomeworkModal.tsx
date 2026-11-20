@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import Modal from './Modal';
-import type { Lesson } from '@/types';
+import type { Lesson, LessonType } from '@/types';
 import { uniqueSubjects, findNextLesson, typeLabel } from '@/lib/lessonUtils';
-import { fromDateKey, toDateKey } from '@/lib/dates';
+import { fromDateKey } from '@/lib/dates';
 
 interface Props {
   open: boolean;
@@ -23,6 +23,7 @@ export default function HomeworkModal({
 }: Props) {
   const subjects = uniqueSubjects(lessons);
   const [subject, setSubject] = useState('');
+  const [typeFilter, setTypeFilter] = useState<LessonType | ''>('');
   const [text, setText] = useState('');
 
   // re-seed on open
@@ -30,16 +31,19 @@ export default function HomeworkModal({
   if (open && !seeded) {
     setSeeded(true);
     setSubject(subjects[0] ?? '');
+    setTypeFilter('');
     setText('');
   }
   if (!open && seeded) setSeeded(false);
 
   const handleSave = () => {
     if (!subject || !text.trim()) return;
-    const next = findNextLesson(lessons, subject, today);
+    const next = findNextLesson(lessons, subject, today, typeFilter || undefined);
     if (!next) {
       onNotify(
-        `Для предмета «${subject}» нет будущих пар в расписании. Выберите дату вручную через редактирование пары.`,
+        typeFilter
+          ? `Для предмета «${subject}» нет будущих пар типа «${typeLabel(typeFilter)}».`
+          : `Для предмета «${subject}» нет будущих пар в расписании. Выберите дату вручную через редактирование пары.`,
         'warn'
       );
       return;
@@ -69,6 +73,20 @@ export default function HomeworkModal({
                 {s}
               </option>
             ))}
+          </select>
+        </label>
+
+        <label className="block">
+          <span className="block text-xs text-neutral-400 mb-1.5">Тип пары</span>
+          <select
+            value={typeFilter}
+            onChange={(e) => setTypeFilter(e.target.value as LessonType | '')}
+            className="w-full bg-neutral-950 border border-neutral-800 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-sky-500 transition-colors"
+          >
+            <option value="">Любой тип</option>
+            <option value="lecture">Лекция</option>
+            <option value="practice">Практика</option>
+            <option value="lab">Лабораторная</option>
           </select>
         </label>
 
